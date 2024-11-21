@@ -117,121 +117,6 @@ copy_archive (struct archive *ar,
     }
 }
 
-static int
-should_extract (struct archive_entry *entry)
-{
-  const char *path = archive_entry_pathname (entry);
-  char new_path[PATH_MAX];
-  int is_compat32 = 0;
-
-  if (has_prefix (path, "./"))
-    path += 2;
-
-  if (strcmp (path, "nvidia_icd.json") == 0 || strcmp (path, "nvidia_icd.json.template") == 0)
-    {
-      archive_entry_set_pathname (entry, "./vulkan/icd.d/nvidia_icd.json");
-      return 1;
-    }
-  if (strcmp (path, "nvidia_layers.json") == 0)
-    {
-      archive_entry_set_pathname (entry, "./vulkan/implicit_layer.d/nvidia_layers.json");
-      return 1;
-    }
-  if (strcmp (path, "10_nvidia.json") == 0)
-    {
-      archive_entry_set_pathname (entry, "./glvnd/egl_vendor.d/10_nvidia.json");
-      return 1;
-    }
-  if (strcmp (path, "10_nvidia_wayland.json") == 0)
-    {
-      archive_entry_set_pathname (entry, "./egl/egl_external_platform.d/10_nvidia.json");
-      return 1;
-    }
-  if (strcmp (path, "15_nvidia_gbm.json") == 0)
-    {
-      archive_entry_set_pathname (entry, "./egl/egl_external_platform.d/15_nvidia_gbm.json");
-      return 1;
-    }
-  if (strcmp (path, "20_nvidia_xcb.json") == 0)
-    {
-      archive_entry_set_pathname (entry, "./egl/egl_external_platform.d/20_nvidia_xcb.json");
-      return 1;
-    }
-  if (strcmp (path, "20_nvidia_xlib.json") == 0)
-    {
-      archive_entry_set_pathname (entry, "./egl/egl_external_platform.d/20_nvidia_xlib.json");
-      return 1;
-    }
-  if (strcmp (path, "nvidia_icd_vksc.json") == 0)
-    {
-      archive_entry_set_pathname (entry, "./vulkansc/icd.d/nvidia_icd_vksc.json");
-      return 1;
-    }
-  if ((strcmp (path, "nvidia-application-profiles-" NVIDIA_VERSION "-key-documentation") == 0) ||
-      (strcmp (path, "nvidia-application-profiles-" NVIDIA_VERSION "-rc") == 0))
-    {
-      snprintf (new_path, sizeof new_path, "./share/nvidia/%s", path);
-      archive_entry_set_pathname (entry, new_path);
-      return 1;
-    }
-
-#ifdef __i386__
-  /* Nvidia no longer has 32bit drivers so we are getting
-   * the 32bit compat libs from the 64bit drivers */
-  if (nvidia_major_version > 390)
-    {
-      if (!has_prefix (path, "32/"))
-        return 0;
-      is_compat32 = 1;
-      path += 3;
-    }
-#endif
-
-  /* Skip these as we're using GLVND on majod > 367*/
-  if (nvidia_major_version > 367 &&
-      (has_prefix (path, "libGL.so") ||
-       has_prefix (path, "libEGL.so")))
-    return 0;
-
-  /* Skip these as we don't ship nvidia-settings */
-  if (has_prefix (path, "libnvidia-gtk"))
-    return 0;
-
-  /* These are not versioned after the driver version */
-  if (strstr (path, "egl-wayland") ||
-      strstr (path, "egl-gbm") ||
-      strstr (path, "egl-xcb") ||
-      strstr (path, "egl-xlib"))
-    {
-      if (is_compat32)
-        archive_entry_set_pathname (entry, path);
-      return 1;
-    }
-
-  if ((has_prefix (path, "lib") ||
-       has_prefix (path, "tls/lib"))&&
-      has_suffix (path, ".so." NVIDIA_VERSION))
-    {
-      if (is_compat32)
-        archive_entry_set_pathname (entry, path);
-      return 1;
-    }
-
-  if (has_suffix (path, ".dll"))
-    {
-      snprintf (new_path, sizeof new_path, "./nvidia/wine/%s", path);
-      archive_entry_set_pathname (entry, new_path);
-      return 1;
-    }
-
-  /* this tar is only a container that stores the actual driver .run file */
-  if (strcmp (path, "builds/NVIDIA-Linux-" ARCH "-" NVIDIA_VERSION ".run") == 0) {
-    return 1;
-  }
-
-  return 0;
-}
-
 static void
 extract (int fd)
 {
@@ -259,8 +144,16 @@ extract (int fd)
       if (r != ARCHIVE_OK)
         die_with_libarchive (a, "archive_read_next_header: %s");
 
-      if (!should_extract (entry))
+      const char *path = archive_entry_pathname (entry);
+
+      if (!has_suffix (path, ".run"))
         continue;
+
+      fprintf (stderr, "Found a .run file in: %s\n", path);
+      path = strrchr(path, '/') + 1;
+      fprintf (stderr, "Extracting it to: %s\n", path);
+
+      archive_entry_set_pathname(entry, path);
 
       r = archive_write_header (ext, entry);
       if (r != ARCHIVE_OK)
@@ -271,6 +164,7 @@ extract (int fd)
           r = archive_write_finish_entry (ext);
           if (r != ARCHIVE_OK)
             die_with_libarchive (ext, "archive_write_finish_entry: %s");
+          break;
         }
     }
 
@@ -385,88 +279,6 @@ find_line_offset (int fd, int skip_lines)
   return 0;
 }
 
-static void
-replace_string_in_file (const char *path,
-                        const char *string,
-                        const char *replacement)
-{
-  char *buffer, *p;
-  size_t len;
-  long fsize;
-  FILE *f;
-
-  if ((f = fopen (path, "r+")) == NULL)
-    die_with_error ("reading file %s", path);
-
-  fseek (f, 0, SEEK_END);
-  fsize = ftell (f);
-  fseek (f, 0, SEEK_SET);
-
-  if ((buffer = malloc (fsize + 1)) == NULL)
-    die ("out of memory");
-
-  if ((len = fread (buffer, 1, fsize, f)) != fsize)
-    die ("failed to read file %s", path);
-  buffer[len] = '\0';
-
-  if ((p = strstr (buffer, string)) != NULL)
-    {
-      char *new_buffer;
-      size_t new_len, idx;
-
-      new_len = len - strlen (string) + strlen (replacement) + 1;
-      if ((new_buffer = malloc (new_len)) == NULL)
-        die ("out of memory");
-
-      idx = p - buffer;
-      memmove (new_buffer, buffer, idx);
-      new_buffer[idx] = '\0';
-
-      strcat (new_buffer, replacement);
-      idx += strlen (string);
-
-      strcat (new_buffer, buffer + idx);
-
-      fseek (f, 0, SEEK_SET);
-      if (fwrite (new_buffer, 1, new_len - 1, f) != new_len - 1)
-        die ("failed to write file %s", path);
-
-      free (new_buffer);
-    }
-
-  free (buffer);
-  fclose (f);
-}
-
-static void create_file_with_content(const char *path,
-                                     const char *string)
-{
-  FILE *f;
-
-  if ((f = fopen (path, "w+")) == NULL)
-    die_with_error ("creating file %s", path);
-
-  if (fprintf(f, "%s\n", string) != strlen(string) + 1)
-    die ("failed to write to file %s", path);
-
-  fclose (f);
-}
-
-static int
-subprocess (char *const argv[])
-{
-  pid_t pid = fork ();
-  int status;
-  if (pid < 0)
-    die_with_error ("failed to fork");
-  else if (pid > 0)
-    waitpid (pid, &status, WAIT_MYPGRP);
-  else
-    if (execvp (argv[0], argv) == -1)
-      die_with_error ("exec failed: %s", argv[0]);
-  return status;
-}
-
 int
 main (int argc, char *argv[])
 {
@@ -474,15 +286,15 @@ main (int argc, char *argv[])
   int skip_lines;
   off_t tar_start;
 
-  if (parse_driver_version (NVIDIA_VERSION,
-                            &nvidia_major_version,
-                            &nvidia_minor_version,
-                            &nvidia_patch_version))
-    die ("failed to parse driver version '%s'.", NVIDIA_VERSION);
+  if (argc < 2)
+  {
+    die ("usage: %s <CUDA .run file>", argv[0]);
+    return 1;
+  }
 
-  fd = open (NVIDIA_BASENAME, O_RDONLY);
+  fd = open (argv[1], O_RDONLY);
   if (fd == -1)
-    die_with_error ("open extra data");
+    die_with_error ("failed to open .run file '%s'", argv[1]);
 
   skip_lines = find_skip_lines (fd);
   tar_start = find_line_offset (fd, skip_lines);
@@ -493,65 +305,6 @@ main (int argc, char *argv[])
   extract (fd);
 
   close (fd);
-
-  unlink (NVIDIA_BASENAME);
-
-  /* check if this container is just a wrapper over the real driver container */
-  if (rename ("./builds/NVIDIA-Linux-" ARCH "-" NVIDIA_VERSION ".run", NVIDIA_BASENAME) == 0)
-    return main (argc, argv);
-  else if (errno != ENOENT)
-    die_with_error ("rename ./builds/NVIDIA-Linux-" ARCH "-" NVIDIA_VERSION ".run failed");
-
-  char *ldconfig_argv[] = {"ldconfig", "-n", ".", NULL};
-  if (subprocess (ldconfig_argv))
-    die ("running ldconfig failed");
-
-  if (((nvidia_major_version == 470 && nvidia_minor_version >= 63) ||
-      nvidia_major_version >= 495) && nvidia_major_version < 545 &&
-      strcmp(ARCH, "i386") != 0)
-    {
-      checked_symlink ("libnvidia-vulkan-producer.so." NVIDIA_VERSION,
-                       "libnvidia-vulkan-producer.so");
-    }
-
-  if (nvidia_major_version >= 550)
-    {
-      checked_symlink ("libnvidia-gpucomp.so." NVIDIA_VERSION, "libnvidia-gpucomp.so");
-    }
-
-  checked_symlink ("libcuda.so.1", "libcuda.so");
-  checked_symlink ("libnvidia-ml.so.1", "libnvidia-ml.so");
-  checked_symlink ("libnvidia-opencl.so.1", "libnvidia-opencl.so");
-  checked_symlink ("libvdpau_nvidia.so.1", "libvdpau_nvidia.so");
-
-  if (nvidia_major_version >= 495)
-    {
-      mkdir ("gbm", 0755);
-      checked_symlink ("../libnvidia-allocator.so." NVIDIA_VERSION, "gbm/nvidia-drm_gbm.so");
-    }
-
-  if (nvidia_major_version >= 319)
-    {
-      checked_symlink ("nvidia-application-profiles-" NVIDIA_VERSION "-key-documentation",
-                       "share/nvidia/nvidia-application-profiles-key-documentation");
-      checked_symlink ("nvidia-application-profiles-" NVIDIA_VERSION "-rc",
-                       "share/nvidia/nvidia-application-profiles-rc");
-    }
-
-  if (nvidia_major_version <= 390)
-    {
-      unlink ("libnvidia-tls.so." NVIDIA_VERSION);
-      checked_symlink ("tls/libnvidia-tls.so." NVIDIA_VERSION,
-                       "libnvidia-tls.so." NVIDIA_VERSION);
-    }
-
-  mkdir ("OpenCL", 0755);
-  mkdir ("OpenCL/vendors", 0755);
-  create_file_with_content ("OpenCL/vendors/nvidia.icd", "libnvidia-opencl.so");
-
-  if (nvidia_major_version > 340)
-    replace_string_in_file ("vulkan/icd.d/nvidia_icd.json",
-                            "__NV_VK_ICD__", "libGLX_nvidia.so.0");
 
   return 0;
 }
