@@ -1,25 +1,255 @@
-name: Test build
+name: build, install & test
 
 on:
+  # TODO: Remove 'push' before sending a PR.
+  push:
   pull_request:
-    branches:
-      - master
+  workflow_dispatch:
+
+env:
+  # The Docker image, which will be used to: Build the Flatpak manifest, install the resulting package and run tests.
+  # The version of the image must be in sync with the version of the SDK defined in the Flatpak manifest.
+  DOCKER_IMAGE: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
+  # Example: ./data/nvidia-570.86.16-x86_64.data
+  DATA_FILE_PATH: ./data/nvidia-%s-%s.data
+  # Example: ./tests/nvidia-R570-file-list-x86_64.txt
+  TEST_FILE_PATH: ./tests/nvidia-R%d-file-list-%s.txt
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
 
 jobs:
-  build:
+  setup:
+    name: check / setup
     runs-on: ubuntu-24.04
+    outputs:
+      matrix-json: ${{ steps.set-matrix.outputs.matrix-json }}
     steps:
-      - name: Install flatpak-builder
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak-builder make
-          flatpak remote-add --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build
+      - name: Ensure that data files exist
+        id: data
         run: |
-          # Only build a single version to speed up CI.
-          echo 'DRIVER_VERSIONS="${BETA_VERSIONS%% *}"' >> versions.sh
-          make
+          # shellcheck disable=SC1091
+          source ./versions.sh
+          # This converts $DRIVER_VERSIONS from versions.sh into an array.
+          read -ra DRIVER_VERSIONS <<< "${DRIVER_VERSIONS}"
+
+          versions_x86=()
+          versions_aarch64=()
+          errors=()
+
+          for version in "${DRIVER_VERSIONS[@]}"; do
+            # Create a list of the data files we expect to be present in the data/ directory.
+            data_files=("$(printf -- '${{ env.DATA_FILE_PATH }}' "${version}" x86_64)"
+                        "$(printf -- '${{ env.DATA_FILE_PATH }}' "${version}" i386)"
+                        "$(printf -- '${{ env.DATA_FILE_PATH }}' "${version}" aarch64)")
+
+            for data_file in "${data_files[@]}"; do
+              # In current times, it's safe to assume that NVIDIA will always provide drivers for x86_64 (and i386), so
+              # data files for both x86_64 and i386 must always be present. In the future, this might require adjusting.
+              if [[ "${data_file}" == *x86_64* || "${data_file}" == *i386* ]]; then
+                if [ ! -f "${data_file}" ]; then
+                  if [[ "${data_file}" == *i386* ]]; then
+                    driver_arch=i386
+                  else
+                    driver_arch=x86_64
+                  fi
+                  errors+=("${version}-${driver_arch}")
+                  echo "::error::Missing ${driver_arch} data file '${data_file}' for driver version ${version}." \
+                       'Please check out the README.md file to learn how to generate it.'
+                  continue
+                fi
+                versions_x86+=("${version}")
+              # For non-x86 architectures, we can relax the check for the data file, because there's no easy way of knowing
+              # with certainty that a driver release has aarch64 support, e.g. beta Vulkan drivers.
+              elif [[ "${data_file}" == *aarch64* ]]; then
+                if [ -f "${data_file}" ]; then
+                  versions_aarch64+=("${version}")
+                fi
+              fi
+            done
+          done
+
+          if [ "${#errors[@]}" -ne 0 ]; then
+            # echo "::error::Driver version(s) with error(s): ${errors[*]}"
+            exit 1
+          fi
+
+          echo "versions_x86=$(jq -cn '$ARGS.positional' --args -- "${versions_x86[@]}")" >> "${GITHUB_OUTPUT}"
+          echo "versions_aarch64=$(jq -cn '$ARGS.positional' --args -- "${versions_aarch64[@]}")" >> "${GITHUB_OUTPUT}"
+
+      - name: Ensure that test files exist
+        run: |
+          # Convert the JSON output from the 'data' step back to a Bash array.
+          mapfile -t versions_x86 < <(echo '${{ steps.data.outputs.versions_x86 }}' | jq -r '.[]')
+          mapfile -t versions_aarch64 < <(echo '${{ steps.data.outputs.versions_aarch64 }}' | jq -r '.[]')
+          errors=()
+
+          for version in "${versions_x86[@]}"; do
+            version_major="${version%%.*}"
+
+            # Create a list of x86_64 (GL) and i386 (GL32) test files we expect to be present in the tests/ directory.
+            test_files=("$(printf -- '${{ env.TEST_FILE_PATH }}' "${version_major}" x86_64)"
+                         # On x86_64, we expect to exist a i386 test file as well.
+                        "$(printf -- '${{ env.TEST_FILE_PATH }}' "${version_major}" i386)")
+
+            for test_file in "${test_files[@]}"; do
+              if [ ! -f "${test_file}" ]; then
+                if [[ "${test_file}" == *i386* ]]; then
+                  driver_arch=i386
+                else
+                  driver_arch=x86_64
+                fi
+                errors+=("${version}-${driver_arch}")
+                echo "::error::Missing ${driver_arch} test file '${test_file}' for driver version ${version}." \
+                     'Please check out the README.md file to learn how to generate it.'
+                continue
+              fi
+            done
+          done
+
+          for version in "${versions_aarch64[@]}"; do
+            version_major="${version%%.*}"
+
+            # Define the aarch64 (GL) test file we expect to be present in the tests/ directory.
+            test_file=$(printf -- '${{ env.TEST_FILE_PATH }}' "${version_major}" aarch64)
+
+            if [ ! -f "${test_file}" ]; then
+              errors+=("${version}-aarch64")
+              echo "::error::Missing aarch64 test file '${test_file}' for driver version ${version}." \
+                   'Please check out the README.md file to learn how to generate it.'
+              continue
+            fi
+          done
+
+          if [ "${#errors[@]}" -ne 0 ]; then
+            # echo "::error::Driver version(s) with error(s): ${errors[*]}"
+            exit 1
+          fi
+
+      - name: Generate a list of driver versions to test
+        id: set-matrix
+        run: |
+          # Convert the JSON output from the 'data' step back to a Bash array.
+          mapfile -t versions_x86 < <(echo '${{ steps.data.outputs.versions_x86 }}' | jq -r '.[]')
+          mapfile -t versions_aarch64 < <(echo '${{ steps.data.outputs.versions_aarch64 }}' | jq -r '.[]')
+
+          # Extract only the most recent driver versions we have of each major release.
+          read -ra versions_x86 <<< "$(printf -- '%s\n' "${versions_x86[@]}" | sort -t. -k1,1nr -k2,2nr -k3,3nr | awk -F. '!seen[$1]++' | xargs)"
+          read -ra versions_aarch64 <<< "$(printf -- '%s\n' "${versions_aarch64[@]}" | sort -t. -k1,1nr -k2,2nr -k3,3nr | awk -F. '!seen[$1]++' | xargs)"
+
+          # Convert the Bash arrays above back to JSON, which will be used by the next build job to dynamically create the build/test matrix.
+          x86_json=$(jq -cn '$ARGS.positional | map({version: .,
+                     image: "${{ env.DOCKER_IMAGE }}",
+                     runner: "ubuntu-24.04",
+                     version_major: split(".")[0],
+                     arch: "x86_64"})' --args -- "${versions_x86[@]}")
+          aarch64_json=$(jq -cn '$ARGS.positional | map({version: .,
+                     image: "${{ env.DOCKER_IMAGE }}",
+                     runner: "ubuntu-24.04-arm",
+                     version_major: split(".")[0],
+                     arch: "aarch64"})' --args -- "${versions_aarch64[@]}")
+
+          # Merge the two JSON objects above to create the final build/test matrix.
+          matrix_json=$(jq -cn --argjson x86 "${x86_json}" --argjson aarch64 "${aarch64_json}" '{include: ($x86 + $aarch64)}')
+
+          echo "matrix-json=${matrix_json}" >> "${GITHUB_OUTPUT}"
+
+  tests:
+    needs: setup
+    name: R${{ matrix.version_major }} / ${{ matrix.arch }} / test ${{ matrix.version }}
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      diffs: ${{ steps.test-files.outputs.diffs }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix-json) }}
+    container:
+      image: ${{ matrix.image }}
+      options: --privileged
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prevent git's dubious ownership error
+        run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
+      - name: Modify versions.sh to only build version ${{ matrix.version }}
+        run: echo 'DRIVER_VERSIONS="${{ matrix.version }}"' >> ./versions.sh
+
+      - name: Run build script
+        run: ./build.sh '${{ matrix.arch }}' ./repo '' '--sandbox --install-deps-from=flathub --disable-rofiles-fuse'
+
+      - name: Install GL extension
+        run: flatpak install -y --noninteractive ./repo "runtime/org.freedesktop.Platform.GL.nvidia-$(tr . - <<< '${{ matrix.version }}')/${{ matrix.arch }}/1.4"
+
+      - name: Install GL32 extension
+        if: ${{ matrix.arch == 'x86_64' }}
+        run: flatpak install -y --noninteractive ./repo "runtime/org.freedesktop.Platform.GL32.nvidia-$(tr . - <<< '${{ matrix.version }}')/${{ matrix.arch }}/1.4"
+
+      - name: Regenerate test files
+        run: ./generate-tests.sh '${{ matrix.version }}' '${{ matrix.arch }}'
+
+      - name: Ensure that test files haven't been modified
+        id: test-files
+        run: |
+          test_files=("$(printf -- '${{ env.TEST_FILE_PATH }}' '${{ matrix.version_major }}' '${{ matrix.arch }}')")
+          if [[ '${{ matrix.arch }}' == 'x86_64' ]]; then
+            test_files+=("$(printf -- '${{ env.TEST_FILE_PATH }}' '${{ matrix.version_major }}' i386)")
+          fi
+
+          diffs=()
+          for test_file in "${test_files[@]}"; do
+            if ! diff=$(git diff --exit-code -- "${test_file}"); then
+              diff_file="$(basename -s.txt "${test_file}").diff"
+              echo "${diff}" > "${diff_file}"
+              diffs+=("${diff_file}")
+              echo "::error::Test file '${test_file}' has been modified."
+            fi
+          done
+
+          if [ "${#diffs[@]}" -gt 0 ]; then
+            diffs_json=$(jq -cn '$ARGS.positional' --args -- "${diffs[@]}")
+            echo "diffs=${diffs_json}" >> "${GITHUB_OUTPUT}"
+            # echo '::error::One or more test files have been modified. Please wait for any remaining build jobs to finish,' \
+                 # 'and a git diff file will be generated in the "tests-diff" job, which you can then inspect and optionally' \
+                 # 'apply and commit against your own git tree to fix these errors.'
+            exit 1
+          fi
+
+      - name: Upload tests diffs
+        uses: actions/upload-artifact@v4
+        if: ${{ failure() && steps.test-files.conclusion == 'failure' && fromJson(steps.test-files.outputs.diffs)[0] != null }}
+        with:
+          name: tests-R${{ matrix.version_major }}-${{ matrix.arch }}-diff
+          path: '*.diff'
+          if-no-files-found: error
+
+  tests-diff:
+    needs: tests
+    if: ${{ failure() && fromJson(needs.tests.outputs.diffs)[0] != null }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all tests diffs from previous jobs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: 'tests-*-diff'
+          merge-multiple: true
+
+      - name: Delete all tests diffs from previous jobs
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: 'tests-*-diff*'
+
+      - name: Join all tests diffs into one diff file
+        run: awk 'FNR==1 && NR>1 { print "" } 1' *.diff > tests.diff
+
+      - name: Upload tests.diff
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-diff
+          path: tests.diff
+          if-no-files-found: error
