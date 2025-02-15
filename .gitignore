@@ -1,4 +1,5 @@
 .flatpak-builder
+*.diff
 sdk
 platform
 repo
