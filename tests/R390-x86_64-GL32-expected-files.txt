@@ -1,4 +1,4 @@
-OpenCL (N) -> extra/OpenCL | 0777 (lrwxrwxrwx)
+OpenGL (N) -> extra/OpenGL | 0777 (lrwxrwxrwx)
 bin | 0755 (drwxr-xr-x)
 bin/apply_extra | 0755 (-rwxr-xr-x)
 bin/ldconfig | 0755 (-rwxr-xr-x)
