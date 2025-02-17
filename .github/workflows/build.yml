@@ -134,8 +134,8 @@ jobs:
           mapfile -t versions_aarch64 < <(echo '${{ steps.data.outputs.versions_aarch64 }}' | jq -r '.[]')
 
           # Extract only the most recent driver versions we have of each major release.
-          read -ra versions_x86 <<< "$(printf -- '%s\n' "${versions_x86[@]}" | sort -t. -k1,1nr -k2,2nr -k3,3nr | awk -F. '!seen[$1]++' | xargs)"
-          read -ra versions_aarch64 <<< "$(printf -- '%s\n' "${versions_aarch64[@]}" | sort -t. -k1,1nr -k2,2nr -k3,3nr | awk -F. '!seen[$1]++' | xargs)"
+          read -ra versions_x86 <<< "$(printf -- '%s\n' "${versions_x86[@]}" | sort -t. -k1,1n -k2,2n -k3,3n | awk -F. '!seen[$1]++' | xargs)"
+          read -ra versions_aarch64 <<< "$(printf -- '%s\n' "${versions_aarch64[@]}" | sort -t. -k1,1n -k2,2n -k3,3n | awk -F. '!seen[$1]++' | xargs)"
 
           # Transform the arrays above back into JSON, which will be used by the next build job to dynamically create the build/test matrix.
           x86_json=$(jq -cn '$ARGS.positional | map({version: ., version_major: split(".")[0], arch: "x86_64"})' --args -- "${versions_x86[@]}")
