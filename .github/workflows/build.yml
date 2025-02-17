@@ -12,6 +12,11 @@ env:
   # Example: ./tests/R570-x86_64-GL-expected-files.txt
   TEST_FILE_PATH: ./tests/R%d-%s-%s-expected-files.txt
 
+defaults:
+  run:
+    # default: https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#jobsjob_iddefaultsrunshell
+    shell: bash -euxo pipefail {0}
+
 jobs:
   setup:
     runs-on: ubuntu-24.04
@@ -24,8 +29,6 @@ jobs:
       - name: Ensure that data files exist
         id: data
         run: |
-          set -euxo pipefail
-
           # shellcheck disable=SC1091
           source ./versions.sh
           # This converts $DRIVER_VERSIONS from versions.sh into an array.
@@ -76,8 +79,6 @@ jobs:
 
       - name: Ensure that test files exist
         run: |
-          set -euxo pipefail
-
           # Convert the JSON output from the 'data' step back to a Bash array.
           mapfile -t versions_x86 < <(echo '${{ steps.data.outputs.versions_x86 }}' | jq -r '.[]')
           mapfile -t versions_aarch64 < <(echo '${{ steps.data.outputs.versions_aarch64 }}' | jq -r '.[]')
@@ -126,8 +127,6 @@ jobs:
       - name: Generate a list of driver versions to test
         id: set-matrix
         run: |
-          set -euxo pipefail
-
           # Convert the JSON output from the 'data' step back to a Bash array.
           mapfile -t versions_x86 < <(echo '${{ steps.data.outputs.versions_x86 }}' | jq -r '.[]')
           mapfile -t versions_aarch64 < <(echo '${{ steps.data.outputs.versions_aarch64 }}' | jq -r '.[]')
@@ -179,8 +178,6 @@ jobs:
 
       - name: Regenerate test files
         run: |
-          set -euxo pipefail
-
           # Replace dots by dashes in the driver version string.
           version_dash=$(tr . - <<< '${{ matrix.version }}')
 
@@ -248,7 +245,6 @@ jobs:
       - name: Ensure that test files haven't been modified
         id: test-files
         run: |
-          set -euxo pipefail
           # Display an error if any of the regenerated test files have been modified, but don't fail immediately,
           # because we need to wait for all concurrent build jobs to finish, to then generate a complete git diff file
           # of the changes, which can then be downloaded and applied (which is optional and only done for convenience).
