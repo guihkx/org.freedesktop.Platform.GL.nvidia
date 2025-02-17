@@ -21,7 +21,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Ensure data files exist
+      - name: Ensure that data files exist
         id: data
         run: |
           set -euxo pipefail
@@ -74,7 +74,7 @@ jobs:
           echo "versions_x86=$(jq -cn '$ARGS.positional' --args -- "${versions_x86[@]}")" >> "${GITHUB_OUTPUT}"
           echo "versions_aarch64=$(jq -cn '$ARGS.positional' --args -- "${versions_aarch64[@]}")" >> "${GITHUB_OUTPUT}"
 
-      - name: Ensure test files exist
+      - name: Ensure that test files exist
         run: |
           set -euxo pipefail
 
@@ -133,8 +133,8 @@ jobs:
           mapfile -t versions_aarch64 < <(echo '${{ steps.data.outputs.versions_aarch64 }}' | jq -r '.[]')
 
           # Extract only the most recent driver version we have of each major release.
-          read -ra versions_x86 <<< "$(printf -- '%s\n' "${versions_x86[@]}" | sort -t. -k1,1nr -k2,2nr -k3,3nr | awk -F. '!seen[$1]++' | xargs)"
-          read -ra versions_aarch64 <<< "$(printf -- '%s\n' "${versions_aarch64[@]}" | sort -t. -k1,1nr -k2,2nr -k3,3nr | awk -F. '!seen[$1]++' | xargs)"
+          read -ra versions_x86 <<< "$(printf -- '%s\n' "${versions_x86[@]}" | sort -t. -k1,1nr -k2,2nr -k3,3nr | awk -F. '!seen[$1]++' | head -n1 | xargs)"
+          read -ra versions_aarch64 <<< "$(printf -- '%s\n' "${versions_aarch64[@]}" | sort -t. -k1,1nr -k2,2nr -k3,3nr | awk -F. '!seen[$1]++' | head -n1 | xargs)"
 
           # Transform the arrays above back into a JSON object, to be later used by the next GitHub Actions job to dynamically create the build/test matrix.
           x86_json=$(jq -cn '$ARGS.positional | map({version: ., version_major: split(".")[0], arch: "x86_64"})' --args -- "${versions_x86[@]}")
@@ -232,9 +232,9 @@ jobs:
               #
               # Please check out the "-printf" section of the find(1) manual for more details: https://man.archlinux.org/man/find.1.en#printf
               find . ! -path . ! -path ./.ref ! -path ./manifest.json \( -type l -printf '%P (%Y) -> %l | %#m (%M)\n' -o -printf '%P | %#m (%M)\n' \) | \
-              # To ensure a deterministic output, we need to sort it.
+              # To ensure that we get a deterministic output, we need to sort it.
               sort -n | \
-              # To ensure we can reuse the list of files of a major release across minor/patch releases, we need replace the
+              # To ensure that we can reuse the list of files of a major release across minor/patch releases, we need replace the
               # entire version string in filenames by only $MAJOR, so e.g. "libGL.so.570.86.16" becomes "libGL.so.570", and
               # "nvidia-application-profiles-570-86-16-key-documentation" becomes "nvidia-application-profiles-570-key-documentation".
               #
@@ -245,7 +245,7 @@ jobs:
             ) > "${test_file}"
           done
 
-      - name: Ensure test files haven't been modified
+      - name: Ensure that test files haven't been modified
         id: test-files
         run: |
           set -euxo pipefail
@@ -262,8 +262,10 @@ jobs:
           diffs=()
           for test_file in "${test_files[@]}"; do
             if ! diff=$(git diff --exit-code -- "${test_file}"); then
+              diff_file="$(basename -s.txt "${test_file}").diff"
+              echo "${diff}" > "${diff_file}"
+              diffs+=("${diff_file}")
               modified_tests+=("${test_file}")
-              diffs+=("${diff}")
               echo "::error::Test file '${test_file}' has been modified"
             fi
           done
@@ -272,27 +274,35 @@ jobs:
             diffs_json=$(jq -cn '$ARGS.positional' --args -- "${diffs[@]}")
             echo "diffs=${diffs_json}" >> "${GITHUB_OUTPUT}"
             echo '::error::One or more test files have been modified. Please wait for any remaining build jobs to finish,' \
-                 'and a git diff file will be generated in the "git-diff" job, which you can then inspect and optionally' \
+                 'and a git diff file will be generated in the "tests-diff" job, which you can then inspect and optionally' \
                  'apply and commit against your own git tree to fix these errors.'
             exit 1
           fi
 
-      #- uses: actions/upload-artifact@v4
-        ##if: ${{ steps.test-files.outputs.diffs.length > 0 }}
-        #with:
-          #name: R${{ matrix.version_major }}-${{ matrix.arch }}-expected-files
-          #path: 'tests/R${{ matrix.version_major }}*.txt'
+      - name: Upload tests diffs
+        uses: actions/upload-artifact@v4
+        if: failure() && fromJson(steps.test-files.outputs.diffs)[0] != null
+        with:
+          name: tests-R${{ matrix.version_major }}-${{ matrix.arch }}-expected-files-diff
+          path: '*.diff'
+          if-no-files-found: error
 
-  git-diff:
-    if: ${{ failure() && needs.test.outputs.test-files-diffs.length > 0 }}
+  tests-diff:
     needs: test
+    if: failure() && fromJson(needs.test.outputs.test-files-diffs)[0] != null
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Download tests diffs
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
 
-      - run: echo '${{ fromJson(needs.test.outputs.test-files-diffs) }}'
-        #- uses: actions/download-artifact@v4
-        #with:
-          #name: R${{ matrix.version_major }}_${{ matrix.arch }}_expected_files
-          #path: '*.txt'
+      - name: Combine tests diffs into one diff file
+        run: awk 'FNR==1 && NR>1 { print "" } 1' *.diff > tests-all.diff
+
+      - name: Upload tests-all.diff
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-all-diffs
+          path: tests-all.diff
+          if-no-files-found: error
