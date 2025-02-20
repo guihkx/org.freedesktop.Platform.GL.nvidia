@@ -19,6 +19,7 @@ defaults:
 jobs:
   setup:
     runs-on: ubuntu-24.04
+    continue-on-error: false
     outputs:
       matrix-json: ${{ steps.set-matrix.outputs.matrix-json }}
     steps:
