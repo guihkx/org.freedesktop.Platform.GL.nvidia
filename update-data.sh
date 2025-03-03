@@ -43,9 +43,13 @@ for VER in ${DRIVER_VERSIONS}; do
         fi
 
         if [ ${ARCH} == aarch64 ]; then
-            if [ ${MAJOR_VER} -lt 470 ]; then
+            # Tesla drivers have introduced aarch64 support in R450.
+            # The exception to this are versions 470.141.10, 515.65.07 and 520.61.05, which are downloadable through
+            # the 'tesla' directory for x86_64, but don't have an aarch64 counterpart, for whatever reason.
+            if [[ ${TESLA_VERSIONS} == *${VER}* && ${MAJOR_VER} -lt 450 || ${MAJOR_VER} -eq 470 || ${MAJOR_VER} -eq 515 || ${MAJOR_VER} -eq 520 ]]; then
                 continue
-            elif [[ ${TESLA_VERSIONS} == *${VER}* ]]; then
+            # GeForce drivers have introduced aarch64 support in R460.
+            elif [ ${MAJOR_VER} -lt 460 ]; then
                 continue
             elif [[ ${VULKAN_VERSIONS} == *${VER}* ]]; then
                 continue
