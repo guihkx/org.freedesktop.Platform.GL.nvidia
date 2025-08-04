@@ -1,19 +1,18 @@
 name: Test build
+
 on:
   pull_request:
     branches:
       - master
-defaults:
-  run:
-    shell: bash
+
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
-      - name: Install flatpak
+      - name: Install flatpak-builder
         run: |
           sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder ostree make
+          sudo apt-get install -y --no-install-recommends flatpak-builder make
           flatpak remote-add --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
       - name: Checkout repo
@@ -21,6 +20,10 @@ jobs:
 
       - name: Build
         run: |
-          # Only build a single version to speed up CI.
-          echo 'DRIVER_VERSIONS="${BETA_VERSIONS%% *}"' >> versions.sh
+          set -x
+          source ./versions.sh
+          read -ra DRIVER_VERSIONS <<< "${DRIVER_VERSIONS}"
+          # Only build the most recent version of every major release.
+          VERSIONS=$(printf -- '%s\n' "${DRIVER_VERSIONS[@]}" | sort -t. -k1,1nr -k2,2nr -k3,3nr | awk -F. '!seen[$1]++' | xargs)
+          echo "DRIVER_VERSIONS='${VERSIONS}'" >> versions.sh
           make
