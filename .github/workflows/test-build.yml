@@ -20,10 +20,6 @@ jobs:
 
       - name: Build
         run: |
-          set -x
-          source ./versions.sh
-          read -ra DRIVER_VERSIONS <<< "${DRIVER_VERSIONS}"
-          # Only build the most recent version of every major release.
-          VERSIONS=$(printf -- '%s\n' "${DRIVER_VERSIONS[@]}" | sort -t. -k1,1nr -k2,2nr -k3,3nr | awk -F. '!seen[$1]++' | xargs)
-          echo "DRIVER_VERSIONS='${VERSIONS}'" >> versions.sh
+          # Only build a single version to speed up CI.
+          echo 'DRIVER_VERSIONS="${BETA_VERSIONS%% *}"' >> versions.sh
           make
