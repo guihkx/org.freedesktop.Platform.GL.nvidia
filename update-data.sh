@@ -73,8 +73,11 @@ for VER in ${DRIVER_VERSIONS}; do
             VULKAN_VER=${VER//./}
             URL=https://developer.nvidia.com/downloads/vulkan-beta-${VULKAN_VER}-linux
             if ! curl -f -L -o dl ${URL}; then
-                echo "Unable to find URL for version ${VER}, arch ${ARCH}"
-                exit 1
+                URL=https://developer.nvidia.com/downloads/assets/gameworks/downloads/secure/Vulkan_Beta_Drivers/NVIDIA-Linux-${NVIDIA_ARCH}-${VER}.run
+                if ! curl -f -L -o dl ${URL}; then
+                    echo "Unable to find URL for version ${VER}, arch ${ARCH}"
+                    exit 1
+                fi
             fi
         elif [[ ${CUDA_VERSIONS} == *${VER}* ]]; then
             URL=https://github.com/flathub/org.freedesktop.Platform.GL.nvidia/releases/download/cuda/NVIDIA-Linux-${NVIDIA_ARCH}-${VER}.run
