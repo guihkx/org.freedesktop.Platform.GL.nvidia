@@ -149,14 +149,14 @@ should_extract (struct archive_entry *entry)
       archive_entry_set_pathname (entry, "./vulkan/implicit_layer.d/nvidia_layers.json");
       return 1;
     }
-  if (strcmp (path, "09_nvidia_wayland2.json") == 0)
-    {
-      archive_entry_set_pathname (entry, "./glvnd/egl_vendor.d/09_nvidia_wayland2.json");
-      return 1;
-    }
   if (strcmp (path, "10_nvidia.json") == 0)
     {
       archive_entry_set_pathname (entry, "./glvnd/egl_vendor.d/10_nvidia.json");
+      return 1;
+    }
+  if (strcmp (path, "09_nvidia_wayland2.json") == 0)
+    {
+      archive_entry_set_pathname (entry, "./egl/egl_external_platform.d/09_nvidia_wayland2.json");
       return 1;
     }
   if (strcmp (path, "10_nvidia_wayland.json") == 0)
